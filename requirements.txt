@@ -1,0 +1,24 @@
+# Core
+torch>=2.1
+transformers>=4.40
+datasets>=2.18
+accelerate>=0.27
+tokenizers>=0.15
+
+# Data
+pandas>=2.0
+numpy>=1.24
+scikit-learn>=1.3
+requests>=2.31
+
+# Augmentation
+nltk>=3.8
+
+# Evaluation / plotting
+matplotlib>=3.8
+seaborn>=0.13
+tqdm>=4.66
+
+# Notebook
+ipykernel>=6.29
+ipywidgets>=8.1
