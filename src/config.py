@@ -47,6 +47,7 @@ class TrainConfig:
             "remove_urgency",
             "rewrite_subject",
             "synonym_swap",
+            "char_perturb",
         )
     )
     # quick smoke-test mode

@@ -110,9 +110,22 @@ def evaluate_checkpoint(
         "standard": std_m,
         "smart_attacker": smart_m,
         "ablation": ablation,
+        "config": {
+            "model_name": cfg.model_name,
+            "seed": cfg.seed,
+            "max_length": cfg.max_length,
+            "augment_train": cfg.augment_train,
+            "aug_ops": list(aug_cfg.ops),
+        },
     }
-    out_path = Path(RESULTS_DIR) / "eval_report.json"
+    # Write the per-run report inside the checkpoint directory so each
+    # (config, seed) pair has its own JSON and aggregate_seeds.py can find
+    # all of them via a glob.
+    out_path = Path(checkpoint_dir) / "eval_report.json"
     dump_json(report, out_path)
+    # Also keep a "latest" copy at the results root for backwards-compat with
+    # older notebooks/cells that read results/eval_report.json directly.
+    dump_json(report, Path(RESULTS_DIR) / "eval_report.json")
     logger.info("Eval report written to %s", out_path)
     return report
 

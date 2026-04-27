@@ -143,9 +143,11 @@ def train_loop(cfg: TrainConfig) -> Path:
                     "bfloat16" if amp_dtype == torch.bfloat16 else "float16")
 
     best_val = -float("inf")
-    out_dir = Path(cfg.output_dir) / (
-        "augmented" if cfg.augment_train else "baseline"
-    )
+    suffix = "augmented" if cfg.augment_train else "baseline"
+    # Seed-aware output: each (config, seed) pair gets its own directory so
+    # multi-seed runs don't overwrite each other and `aggregate_seeds.py`
+    # can find them all.
+    out_dir = Path(cfg.output_dir) / f"{suffix}_seed{cfg.seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(cfg.epochs):
@@ -210,12 +212,12 @@ def _eval_dataloader(model, loader, device) -> dict:
 def main():
     cfg = parse_args()
     out_dir = train_loop(cfg)
-    # Always evaluate at the end
+    # Always evaluate at the end. eval_report.json is written *inside* the
+    # checkpoint dir by evaluate_checkpoint, so multi-seed runs don't clobber
+    # each other.
     rep = evaluate_checkpoint(out_dir, cfg)
     md = render_markdown_report(rep)
-    rep_path = Path(RESULTS_DIR) / (
-        "report_augmented.md" if cfg.augment_train else "report_baseline.md"
-    )
+    rep_path = Path(out_dir) / "report.md"
     rep_path.write_text(md)
     print(md)
     print(f"\nReport saved to {rep_path}")
