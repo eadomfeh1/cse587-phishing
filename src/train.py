@@ -130,8 +130,17 @@ def train_loop(cfg: TrainConfig) -> Path:
         num_warmup_steps=int(cfg.warmup_ratio * total_steps),
         num_training_steps=total_steps,
     )
+    # Mixed precision: prefer bfloat16 on A100/H100 (no GradScaler needed),
+    # fall back to fp16 + GradScaler on T4/V100/older GPUs.
     use_amp = cfg.fp16 and device.type == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    amp_dtype = torch.bfloat16 if (
+        use_amp and torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    ) else torch.float16
+    use_scaler = use_amp and amp_dtype == torch.float16
+    scaler = torch.cuda.amp.GradScaler(enabled=use_scaler)
+    if use_amp:
+        logger.info("Mixed precision enabled: %s",
+                    "bfloat16" if amp_dtype == torch.bfloat16 else "float16")
 
     best_val = -float("inf")
     out_dir = Path(cfg.output_dir) / (
@@ -146,14 +155,19 @@ def train_loop(cfg: TrainConfig) -> Path:
         for step, batch in enumerate(train_loader):
             batch = {k: v.to(device) for k, v in batch.items()}
             optim.zero_grad()
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.cuda.amp.autocast(enabled=use_amp, dtype=amp_dtype):
                 out = model(**batch)
                 loss = out.loss
-            scaler.scale(loss).backward()
-            scaler.unscale_(optim)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optim)
-            scaler.update()
+            if use_scaler:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optim)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optim)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optim.step()
             scheduler.step()
             running += loss.item()
             if step % 50 == 0:
