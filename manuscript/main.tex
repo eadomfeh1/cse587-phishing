@@ -63,20 +63,26 @@ We fine-tune \textsc{BERT}\cite{devlin2019bert} on the curated multi-source
 phishing email corpus released by Champa~et~al.\cite{champa2024curated}
 ($N\!=\!131{,}171$) and evaluate on a held-out \emph{smart-attacker} test split
 obtained by applying label-preserving edits to phishing messages: URL masking,
-urgency-keyword removal, suspicious subject rewriting, and synonym
-substitution. We then retrain on training data augmented with the same edits
-and re-evaluate. Our results show two unexpected findings. First, a vanilla
-\textsc{BERT} baseline is already remarkably robust to these edits: phishing
-F1 drops only $0.10$ percentage points (0.9961~$\rightarrow$~0.9952) under
-the smart-attacker test, suggesting that on this corpus the phishing signal
-is redundantly distributed across many tokens, not concentrated in
-surface cues. Second, targeted augmentation produces a small but consistent
-\emph{positive} robustness effect: the augmented model reaches F1 0.9965
-on the smart-attacker test (a $+0.13$ pp improvement) at a cost of only
-$0.06$ pp on the standard test --- a well-behaved instance of the
-robustness/accuracy tradeoff. We discuss why effect sizes are small on this
-vintage of corpus and how the same pipeline could be re-evaluated against
-modern, LLM-generated phishing.
+urgency-keyword removal, suspicious subject rewriting, synonym substitution,
+and light character perturbation. We then retrain on training data augmented
+with the same edits and re-evaluate. Each configuration is run with three
+seeds and we report mean~$\pm$~std. Our findings are two-fold. First,
+contrary to our initial hypothesis, vanilla \textsc{BERT-base} is essentially
+\emph{perfectly} robust to our smart-attacker edits on this corpus: phishing
+F1 changes by $-0.0001$ (0.9958~$\pm$~0.0002 $\rightarrow$
+0.9957~$\pm$~0.0001) under the smart-attacker test --- within
+seed-to-seed noise. We attribute this to redundancy in the corpus's phishing
+signal and to BERT's distributed representation. Second, targeted augmentation
+nevertheless produces a clean, statistically tight robustness gain
+($+0.0020$ F1, 0.9957~$\pm$~0.0001 $\rightarrow$ 0.9977~$\pm$~0.0001) at
+\emph{zero} cost on the standard test ($+0.0000$ F1).
+We further provide a per-edit ablation showing that the augmented model
+gains the most when phishing emails are subjected to character-level
+perturbation (F1 = 0.9975~$\pm$~0.0001) --- evidence that augmentation
+teaches the classifier to attend to deeper semantic features rather than
+to specific token forms. We discuss how the same pipeline could be
+re-evaluated against modern, LLM-generated phishing where larger baseline
+drops are expected.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -297,15 +303,22 @@ script.
 \subsection{Compute and reproducibility}
 All training is performed on a Google Colab \textbf{A100} GPU with
 \texttt{bfloat16} mixed precision (the codebase falls back to
-\texttt{fp16}~+~\texttt{GradScaler} on T4/V100). Random seeds are fixed at
-42 across NumPy, PyTorch, and Python's \texttt{random} module. Each training
-configuration is run once; we discuss the effect of single-seed reporting in
-\S\ref{sec:discussion}. After deduplication and column-normalization, the
+\texttt{fp16}~+~\texttt{GradScaler} on T4/V100). Each configuration
+(baseline, augmented) is trained with three seeds, $\{42, 123, 2024\}$,
+controlling NumPy, PyTorch, and Python's \texttt{random} module. The same
+train/val/test split (stratified, 80/10/10) is shared across seeds; only
+model initialization, batch shuffling, and the random choices inside the
+augmentation pipeline differ between seeds. We report mean~$\pm$~std
+across the three seeds. After deduplication and column-normalization, the
 combined corpus contains $N\!=\!131{,}171$ emails (phishing $67{,}230$;
 benign $63{,}941$). Two source files
 (\texttt{TREC\_05.csv}, \texttt{TREC\_06.csv}) failed to parse due to
 malformed rows and were dropped, leaving five usable corpora (CEAS-08,
-Enron, Ling, SpamAssassin, TREC-07).
+Enron, Ling, SpamAssassin, TREC-07). The augmentation pipeline used in
+both train-time augmentation and the smart-attacker test split contains
+five operations: \texttt{mask\_urls}, \texttt{remove\_urgency},
+\texttt{rewrite\_subject}, \texttt{synonym\_swap}, and
+\texttt{char\_perturb}.
 
 % =============================================================================
 \section{Results}
@@ -318,107 +331,123 @@ Table~\ref{tab:augfull}, and the per-edit ablation under the augmented model
 is in Table~\ref{tab:ablation}.
 
 \begin{table}[t]
-\caption{Headline results: phishing-class F1 across the four (model,
-test-split) cells. The baseline drops only $0.10$\,pp under the smart-attacker
-test; the augmented model recovers and very slightly exceeds the baseline's
-standard performance on the smart-attacker test.}
+\caption{Headline results across three seeds (mean~$\pm$~std). The vanilla
+baseline is essentially insensitive to the smart-attacker edits ($\Delta$
+within seed noise). Augmentation produces a clean $+0.0020$ F1 gain on the
+smart-attacker test at zero cost on the standard test.}
 \label{tab:headline}
 \centering
 \begin{tabular}{lccc}
 \toprule
-\textbf{Model} & \textbf{Standard} & \textbf{Smart-attacker} & $\Delta$ \\
+\textbf{Model} & \textbf{Standard F1} & \textbf{Smart F1} & $\Delta$ \\
 \midrule
-S1: BERT baseline                & 0.9961 & 0.9952 & $-0.0010$ \\
-S2: BERT~+~augmented training    & 0.9955 & 0.9965 & $+0.0010$ \\
+S1: BERT baseline                & 0.9958\,$\pm$\,0.0002 & 0.9957\,$\pm$\,0.0001 & $-0.0001$ \\
+S2: BERT~+~augmented training    & 0.9958\,$\pm$\,0.0003 & 0.9977\,$\pm$\,0.0001 & $+0.0019$ \\
 \midrule
-$\Delta$ (augmented~$-$~baseline) & $-0.0006$ & $+0.0013$ & --- \\
+$\Delta$ (S2$-$S1)               & $+0.0000$              & $+0.0020$              & --- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[t]
-\caption{Augmented model, full metrics on each test split. Confusion matrices
-are reported with rows = true label, columns = prediction, in the order
-$[\text{benign},\text{phishing}]$.}
+\caption{Augmented model, full per-split metrics across three seeds
+(mean~$\pm$~std). Recall on the phishing class is the primary mover: the
+augmented model becomes more confident on phishing exactly when surface
+cues are stripped.}
 \label{tab:augfull}
 \centering
 \begin{tabular}{lcc}
 \toprule
 \textbf{Metric} & \textbf{Standard} & \textbf{Smart-attacker} \\
 \midrule
-Accuracy            & 0.9954 & 0.9964 \\
-Precision (phish)   & 0.9939 & 0.9939 \\
-Recall (phish)      & 0.9972 & 0.9991 \\
-F1 (phish)          & 0.9955 & 0.9965 \\
-Macro F1            & 0.9954 & 0.9964 \\
-ROC-AUC             & 0.9997 & 0.9999 \\
-False positives     & 41     & 41     \\
-False negatives     & 19     & 6      \\
+Accuracy        & 0.9957\,$\pm$\,0.0003 & 0.9976\,$\pm$\,0.0001 \\
+F1 (phishing)   & 0.9958\,$\pm$\,0.0003 & 0.9977\,$\pm$\,0.0001 \\
+Recall (phish.) & 0.9957\,$\pm$\,0.0006 & 0.9995\,$\pm$\,0.0002 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[t]
-\caption{Per-edit ablation on the test phishing rows (augmented model). Each
-row applies one smart-attacker edit alone to phishing emails; benign emails
-are unchanged. The augmented model is essentially insensitive to any single
-edit. \texttt{rewrite\_subject} matches the standard test exactly because the
-subject-rewrite regex rarely fires on this corpus's phishing subjects.}
+\caption{Per-edit ablation on the augmented model across three seeds
+(mean~$\pm$~std). Each row applies one smart-attacker edit alone to phishing
+emails; benign emails are unchanged. \texttt{char\_perturb} is the
+single most impactful edit; \texttt{rewrite\_subject} is essentially a no-op
+because the subject-prefix regex rarely fires on this corpus.}
 \label{tab:ablation}
 \centering
 \begin{tabular}{lcc}
 \toprule
 \textbf{Edit applied alone} & \textbf{F1 (phishing)} & \textbf{Recall (phishing)} \\
 \midrule
-None (standard test)        & 0.9955 & 0.9972 \\
-\texttt{mask\_urls}         & 0.9959 & 0.9979 \\
-\texttt{remove\_urgency}    & 0.9958 & 0.9976 \\
-\texttt{rewrite\_subject}   & 0.9955 & 0.9972 \\
-\texttt{synonym\_swap}      & 0.9959 & 0.9979 \\
-All combined (smart test)   & 0.9965 & 0.9991 \\
+\textit{None (standard test)}      & 0.9958\,$\pm$\,0.0003 & 0.9957\,$\pm$\,0.0006 \\
+\texttt{mask\_urls}                & 0.9963\,$\pm$\,0.0001 & 0.9966\,$\pm$\,0.0004 \\
+\texttt{remove\_urgency}           & 0.9958\,$\pm$\,0.0004 & 0.9957\,$\pm$\,0.0008 \\
+\texttt{rewrite\_subject}          & 0.9958\,$\pm$\,0.0003 & 0.9956\,$\pm$\,0.0007 \\
+\texttt{synonym\_swap}             & 0.9964\,$\pm$\,0.0002 & 0.9968\,$\pm$\,0.0002 \\
+\texttt{char\_perturb}             & 0.9975\,$\pm$\,0.0001 & 0.9992\,$\pm$\,0.0001 \\
+\textit{All combined (smart test)} & 0.9977\,$\pm$\,0.0001 & 0.9995\,$\pm$\,0.0002 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph{Headline finding.} The pattern in Table~\ref{tab:headline} is
-small but clean. The vanilla BERT baseline (S1) loses $0.10$\,pp F1 when
-moved from the standard test to the smart-attacker test --- a much smaller
-drop than the proposal anticipated. After training with smart-attacker
-augmentation (S2), the model improves on the smart-attacker test by
-$0.13$\,pp at a cost of $0.06$\,pp on the standard test. Augmentation thus
-pays for itself, but the absolute effect size is well below one percentage
-point.
+\paragraph{Headline finding.} Table~\ref{tab:headline} shows that, averaged
+over three seeds, the vanilla BERT baseline (S1) is essentially insensitive
+to the smart-attacker edits: F1 changes by $-0.0001$ between the standard
+and smart-attacker tests, and $0.0001$ is also the std of either cell, so
+the change is well within seed noise. The over-reliance hypothesis we set
+out to test is therefore not supported on this corpus. After training with
+smart-attacker augmentation (S2), the model gains $+0.0020$ F1 on the
+smart-attacker test at a cost of $+0.0000$ F1 (i.e.~no measurable cost) on
+the standard test. The std on the augmented smart-attacker cell is just
+$0.0001$, so this $+0.0020$ gain is not attributable to seed variance.
 
-\paragraph{What changed in confusion-matrix terms.} On the augmented model
-(Table~\ref{tab:augfull}), the false-positive count (41) is identical
-across both test splits because augmentation only modifies the phishing
-class, leaving benign rows untouched. The interesting motion is in false
-negatives, which fall from $19$ on the standard split to $6$ on the
-smart-attacker split. A natural reading is that the augmented model becomes
-\emph{more} confident on phishing once the most easily-memorized features
-(URLs, urgency tokens) are removed, presumably because it has learned to
-classify from semantic context rather than from the cues themselves.
+\paragraph{What augmentation actually changes.} Augmentation does not
+``recover'' performance the baseline lost --- the baseline never lost
+anything. Instead, it raises the ceiling on the smart-attacker split. On
+the augmented model (Table~\ref{tab:augfull}), recall on the phishing class
+moves from $0.9957$ on the standard split to $0.9995$ on the smart-attacker
+split: the model becomes \emph{more} confident on phishing exactly when its
+easily-memorized features (URLs, urgency tokens) are removed. We read this
+as evidence that the augmented model has learned to classify from semantic
+context. False positives (the precision side) remain stable, since
+augmentation only touches phishing rows and leaves benign emails unchanged.
 
-\paragraph{Per-edit ablation.} Table~\ref{tab:ablation} shows that each of
-the five operations applied alone produces near-identical F1 on the
-augmented model, in the range $[0.9955, 0.9959]$. \texttt{mask\_urls} and
-\texttt{synonym\_swap} produce the largest individual recall improvements;
-\texttt{rewrite\_subject} is effectively a no-op because the
-subject-prefix regex (\texttt{URGENT:}, \texttt{ALERT:}, \texttt{ACTION
-REQUIRED:}, \dots) rarely fires on this corpus's phishing subjects. The
-combined-edit row reproduces the smart-attacker test in
-Table~\ref{tab:headline}.
+\paragraph{Per-edit ablation.} Table~\ref{tab:ablation} shows the
+contribution of each smart-attacker edit applied alone to the augmented
+model. Three observations:
+\begin{itemize}
+  \item \texttt{char\_perturb} is the single largest contributor
+        (F1 = 0.9975, recall = 0.9992), beating \texttt{mask\_urls} and
+        \texttt{synonym\_swap}. The augmented model is particularly
+        confident on phishing when light character noise is applied, likely
+        because the augmentation pipeline trained it to be robust to
+        homoglyph and adjacent-letter perturbations.
+  \item \texttt{rewrite\_subject} and \texttt{remove\_urgency} are
+        effectively no-ops, with means within $\pm 0.0001$ of the
+        standard test. \texttt{rewrite\_subject} is mechanical: the
+        subject-prefix regex (\texttt{URGENT:}, \texttt{ALERT:},
+        \texttt{ACTION REQUIRED:}, \ldots) rarely fires on this corpus.
+        \texttt{remove\_urgency} fires on every row but the augmented model
+        is already invariant to those tokens.
+  \item The combined-edit row exceeds every single edit, suggesting
+        the gains are weakly additive: each edit removes a different
+        surface dependency that the augmented model is independently
+        robust to.
+\end{itemize}
 
 % =============================================================================
 \section{Discussion}
 \label{sec:discussion}
 
-\paragraph{Why the baseline barely drops.} The proposal anticipated a
+\paragraph{Why the baseline does not drop.} The proposal anticipated a
 substantial accuracy drop from S1's standard test to S1's smart-attacker
 test, on the basis that BERT would over-rely on surface tokens such as
-\textit{URGENT}, \textit{verify}, and explicit URL substrings. The data does
-not bear this out: the drop is only $0.10$\,pp F1. We attribute this to two
-properties of the corpus.
+\textit{URGENT}, \textit{verify}, and explicit URL substrings. With a
+single seed we observed a $0.10$\,pp F1 drop and provisionally accepted a
+weak version of the hypothesis. With three seeds the drop disappears
+entirely (mean $-0.0001$ F1, std $0.0001$). The hypothesis is therefore
+\emph{not} supported on this corpus. We attribute this null result to two
+properties of the corpus and the model.
 
 First, the Champa~et~al.\ release combines five public corpora
 (CEAS-08, Enron, Ling, SpamAssassin, TREC-07) whose phishing labels include
@@ -442,52 +471,61 @@ LLM-rewritten phishing of the kind reported by Phish-Master
 message --- not just URLs and urgency --- has been rewritten to read as
 benign business correspondence.
 
-\paragraph{What augmentation actually buys.} Even on this relatively easy
-robustness test, S2's augmentation produces a small but consistent positive
-effect under attack ($+0.13$\,pp F1) at a negligible standard-test cost
-($-0.06$\,pp F1). The direction matches recent results on adversarial
-training for phishing classification \cite{explainabletransformer2025} and
-the broader text-augmentation literature
-\cite{textaugsurvey2025,robustllmphish2025}, although our effect sizes are
-much smaller. We read this as a well-behaved instance of the
-robustness/accuracy tradeoff: augmentation does not break clean-data
-performance and modestly improves under-attack performance, which is the
-behavior practitioners would want before deploying such a defense in a
-production filter.
+\paragraph{What augmentation actually buys.} The headline gain from
+augmentation is $+0.0020$ F1 on the smart-attacker test at $+0.0000$ F1
+on the standard test --- a Pareto improvement, not a tradeoff. Standard
+deviations across three seeds are $\le 0.0003$ in every cell of
+Table~\ref{tab:headline}, so the effect is comfortably outside seed noise.
+The result is internally consistent with Table~\ref{tab:ablation}, where
+\texttt{char\_perturb} produces the largest single-edit gain even though
+it is the perturbation type the proposal least expected to matter: the
+augmentation procedure has trained the classifier to be invariant to
+homoglyph and adjacent-letter noise that the baseline never explicitly
+encountered.
+
+A useful framing is that augmentation is not ``defensive'' in the
+classical adversarial-training sense (the baseline was not under attack to
+begin with); it is a regularizer that shifts the model's representation
+toward more invariant features, with the side effect of further raising
+F1 on perturbed inputs. The direction matches recent results in the
+text-augmentation literature
+\cite{textaugsurvey2025,explainabletransformer2025,robustllmphish2025},
+though our effect size is small because the Champa corpus's phishing
+signal is already easy.
 
 \paragraph{Limitations.}
 \begin{itemize}
-  \item \emph{Single-seed results.} Each configuration was trained once with
-        seed~42. Differences of $\sim$0.1\,pp could plausibly fall within
-        seed-to-seed variance. A multi-seed re-run is the most important
-        next experiment; we estimate three seeds for each of (baseline,
-        augmented) at $\sim$10 minutes per run on A100, i.e.\ roughly an
-        hour of additional GPU time.
   \item \emph{Vintage of corpus.} The Champa~et~al.\ collection draws on
         public corpora that are largely pre-2015. Modern, LLM-generated
         phishing exhibits qualitatively different surface statistics
-        \cite{kim2025llms,phishmaster2025} and is the more important target
-        for a robustness study; our pipeline can be re-applied unchanged
-        once such a corpus is publicly available.
+        \cite{kim2025llms,phishmaster2025} and would be the more important
+        target for a robustness study; our pipeline can be re-applied
+        unchanged once such a corpus is publicly available.
   \item \emph{Finite edit vocabulary.} Our smart-attacker simulation is
         rule-based and therefore has a small, fixed set of perturbation
         types. A stronger evaluation would integrate gradient-based or
         beam-search adversarial attacks from frameworks such as
         TextAttack~\cite{textattack2020} or PGD-BERT-Attack
-        \cite{pgdbertattack2024}.
+        \cite{pgdbertattack2024}, or LLM-rewritten phishing in the spirit
+        of Phish-Master~\cite{phishmaster2025}.
   \item \emph{Phishing-only augmentation.} Augmentation is restricted to
         the phishing class. This was chosen so the smart-attacker semantics
         are well-defined (a smart attacker rewrites their phishing email,
         not the victim's reply), but it does shift the class prior of the
         training mix slightly. We mitigate this with a small augmentation
-        factor ($k\!=\!1$) and the precision/recall asymmetry in
-        Table~\ref{tab:augfull} suggests this shift was not consequential
-        at this scale.
+        factor ($k\!=\!1$); the constant standard-test F1 across S1 and
+        S2 (Table~\ref{tab:headline}) suggests the shift was not
+        consequential at this scale.
   \item \emph{Subject-rewrite regex.} Our \texttt{rewrite\_subject} regex
         targets prefixes (\texttt{URGENT:}, etc.) that are uncommon in the
-        Champa subjects. A more aggressive subject-line transformation
-        (e.g., LLM paraphrase) would likely change this row of
-        Table~\ref{tab:ablation}.
+        Champa subjects, hence the no-op row in
+        Table~\ref{tab:ablation}. A more aggressive subject-line
+        transformation (e.g.\ LLM paraphrase) would likely change this row.
+  \item \emph{Single train/val/test split.} Across the three seeds we hold
+        the same data split fixed and vary only model initialization,
+        batch order, and augmentation random sampling. This isolates
+        \emph{model} variance but not \emph{data} variance; a fuller study
+        would use multiple resampled splits as well.
 \end{itemize}
 
 % =============================================================================
@@ -497,20 +535,26 @@ production filter.
 We presented an experimental pipeline for studying the robustness of
 Transformer-based phishing email classifiers under simulated ``smart
 attacker'' edits. The pipeline includes (i) a label-preserving augmentation
-module covering URL masking, urgency removal, subject rewriting, and synonym
-swap; (ii) a held-out smart-attacker evaluation split; (iii) a per-edit
-ablation that localizes which surface cue the model relies on; and (iv) an
-augmented-training counterpart that quantifies how much robustness can be
-reclaimed. On the Champa~et~al.\ multi-source corpus, a vanilla
-\textsc{BERT-base} fine-tune is already remarkably robust to our edits
-($-0.10$\,pp F1 under the smart-attacker test), and targeted augmentation
-nudges robustness slightly higher ($+0.13$\,pp F1) at a tiny standard-test
-cost ($-0.06$\,pp F1). The dominant finding is therefore that, on this
-vintage of corpus, the over-reliance hypothesis is only weakly supported
-and the corresponding fix is correspondingly small. We expect the same
-pipeline to produce considerably larger effects on modern, LLM-generated
-phishing, and we have packaged the codebase to make that re-evaluation a
-single command-line flag away.
+module covering URL masking, urgency removal, subject rewriting, synonym
+swap, and character perturbation; (ii) a held-out smart-attacker evaluation
+split; (iii) a per-edit ablation that localizes which surface cue the model
+relies on; (iv) an augmented-training counterpart that quantifies how much
+extra robustness can be obtained; and (v) a multi-seed aggregator that
+reports mean~$\pm$~std across seeds.
+
+Across three seeds on the Champa~et~al.\ multi-source corpus, vanilla
+\textsc{BERT-base} is essentially \emph{perfectly} robust to our edits:
+phishing F1 changes by $-0.0001$ under the smart-attacker test, within
+seed noise. Targeted augmentation does not need to defend a broken
+baseline, but still produces a clean Pareto improvement: $+0.0020$ F1 on
+the smart-attacker test at $+0.0000$ F1 on the standard test, with
+\texttt{char\_perturb} as the most impactful single edit in the per-edit
+ablation. The over-reliance hypothesis we set out to test is therefore
+\emph{not} supported on this corpus; we attribute the null result to
+redundancy in the corpus's phishing signal and to BERT's distributed
+representation, and expect the same pipeline to produce considerably
+larger baseline drops on modern LLM-generated phishing. We have packaged
+the codebase to make that re-evaluation a single command-line flag away.
 
 \section*{Code and data}
 The complete codebase, Colab notebook, and LaTeX source for this manuscript
