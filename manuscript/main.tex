@@ -19,6 +19,22 @@
 \usepackage[hidelinks]{hyperref}
 \usepackage{tikz}
 \usetikzlibrary{shapes.geometric, arrows.meta, positioning}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
+\lstset{
+  basicstyle=\ttfamily\scriptsize,
+  breaklines=true,
+  frame=single,
+  framesep=2pt,
+  framerule=0.3pt,
+  xleftmargin=2pt,
+  xrightmargin=2pt,
+  aboveskip=4pt,
+  belowskip=4pt,
+}
 
 \def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
     T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
@@ -119,12 +135,29 @@ substantially~\cite{adversarialphishing2023,explainabletransformer2025,robustllm
 \end{enumerate}
 
 We instantiate the workflow in Fig.~\ref{fig:workflow}. Concretely, we
-contribute (i) a smart-attacker augmentation pipeline (\S\ref{sec:augmentation}),
-(ii) a held-out smart-attacker evaluation split, and (iii) a per-edit ablation
-that attributes the accuracy drop to specific surface cues.
+contribute (i) a label-preserving smart-attacker augmentation pipeline
+(\S\ref{sec:augmentation}); (ii) a held-out smart-attacker evaluation
+split; (iii) a per-edit ablation that localizes which surface cue the
+classifier relies on; (iv) a multi-seed (n\,=\,3) experimental protocol
+that distinguishes signal from seed noise; and (v) a fully reproducible
+PyTorch~+~HuggingFace codebase that runs end-to-end in a single Colab
+notebook.
+
+\paragraph*{Summary of findings.} Our experiments do not support the
+over-reliance hypothesis on the Champa~et~al.\ corpus: the baseline
+classifier loses essentially zero F1 ($-0.0001 \pm 0.0001$) under the
+smart-attacker test, well within seed noise. Augmentation nevertheless
+produces a clean Pareto improvement, gaining $+0.0020$\,F1 on the
+smart-attacker split at no measurable cost on the standard split, with
+\texttt{char\_perturb} as the most impactful single edit in the per-edit
+ablation. We argue these results reflect properties of the corpus and of
+BERT's distributed representation, and we sketch how the same pipeline
+could be re-applied to modern LLM-generated phishing where larger
+baseline drops are expected.
 
 \begin{figure}[t]
 \centering
+\resizebox{\columnwidth}{!}{%
 \begin{tikzpicture}[
   node distance=5mm and 5mm,
   font=\footnotesize,
@@ -150,13 +183,64 @@ that attributes the accuracy drop to specific surface cues.
 \draw[arr] (aug)   -- (e2);
 \draw[arr] (e2)    -- (rt);
 \draw[arr] (rt)    -- (e3);
-\end{tikzpicture}
+\end{tikzpicture}}
 \caption{Three-stage experimental workflow. (1) Train BERT on the
 Champa~et~al.\ corpus. (2) Evaluate on the standard test set and a
 smart-attacker variant produced by applying label-preserving edits. (3)
 Augment training data with the same edits, retrain, and re-evaluate.}
 \label{fig:workflow}
 \end{figure}
+
+% =============================================================================
+\section{Threat Model}
+\label{sec:threat}
+
+We study a binary email classifier $f_\theta : \mathcal{X} \rightarrow
+\{0, 1\}$ that maps an email's concatenated subject and body
+$x \in \mathcal{X}$ to a label $y$, where $y\!=\!1$ denotes phishing.
+The defender deploys $f_\theta$ as part of an automated email filter and
+seeks high accuracy across both ordinary phishing and adversarially
+modified phishing.
+
+\paragraph{Adversary capabilities.} We assume a \emph{black-box} text-level
+adversary $\mathcal{A}$ who:
+\begin{itemize}
+  \item knows that the defender uses keyword- and URL-based features
+        commonly cited in the literature, but does not have query access
+        to the trained classifier or to training gradients;
+  \item can rewrite the textual content of phishing emails with
+        \emph{label-preserving} edits --- the message must still represent
+        a credible phishing attempt to a human reader;
+  \item cannot directly modify benign emails (this is consistent with the
+        real attack surface: an attacker controls only the messages
+        \emph{they themselves send}).
+\end{itemize}
+The adversary's goal is evasion: cause $f_\theta$ to predict $y\!=\!0$
+(benign) on a phishing input.
+
+\paragraph{Edit budget.} We constrain $\mathcal{A}$ to five categories of
+label-preserving textual edits (Table~\ref{tab:ops}), drawn from
+attacker behaviors documented in
+\cite{kim2025llms,phishmaster2025,robustllmphish2025} and from the standard
+adversarial-NLP toolkit~\cite{textattack2020}. Every edit either removes
+a feature ($\mathit{mask\_urls}$, $\mathit{remove\_urgency}$,
+$\mathit{rewrite\_subject}$) or substitutes a feature with a near-synonym
+($\mathit{synonym\_swap}$, $\mathit{char\_perturb}$). No edit changes the
+underlying semantic intent of the message.
+
+\paragraph{Defender capabilities.} The defender knows the attacker's edit
+budget at training time but does not see the attacker's actual perturbed
+test inputs at training time. The defender's ``defense'' is to augment
+the training data with one perturbed copy of each phishing email
+(\S\ref{sec:augmentation}), obtained by sampling from the same edit
+distribution. This is a non-adaptive defense: the defender does not
+re-train against newly observed attacks.
+
+\paragraph{Success criteria.} A defense succeeds if, relative to the
+undefended baseline, it (i) does not significantly reduce accuracy on the
+standard test set, and (ii) significantly improves accuracy on the
+smart-attacker test set. ``Significantly'' is operationalized below as
+``effect size larger than the std across three seeds.''
 
 % =============================================================================
 \section{Related Work}
@@ -224,11 +308,35 @@ train/validation/test splits.
 \subsection{Backbone classifier}
 We fine-tune \textbf{bert-base-uncased}~\cite{devlin2019bert} via the
 HuggingFace \texttt{transformers} library~\cite{wolf2020transformers}.
-The classifier head is a linear layer on the \texttt{[CLS]} representation.
-Hyperparameters: maximum sequence length 256 tokens, batch size 16,
-3 epochs, learning rate $2\!\times\!10^{-5}$ with linear warm-up of 10\%
-of total steps, AdamW with weight decay 0.01, mixed-precision (fp16) when
-GPU memory permits.
+The classifier head is a single linear layer over the \texttt{[CLS]}
+representation, trained with cross-entropy loss. Hyperparameters are
+fixed across all six runs (3 baseline seeds + 3 augmented seeds) and
+listed in Table~\ref{tab:hp}.
+
+\begin{table}[t]
+\caption{Training hyperparameters. Identical across all six runs.}
+\label{tab:hp}
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Hyperparameter} & \textbf{Value} \\
+\midrule
+Backbone                & \texttt{bert-base-uncased} (110M params) \\
+Max sequence length     & 256 tokens \\
+Batch size (train)      & 64 \\
+Batch size (eval)       & 32 \\
+Epochs                  & 3 \\
+Optimizer               & AdamW, $\beta\!=\!(0.9, 0.999)$ \\
+Learning rate           & $2\!\times\!10^{-5}$ \\
+Weight decay            & 0.01 \\
+LR schedule             & Linear, 10\% warmup \\
+Gradient clipping       & 1.0 ($\ell_2$ norm) \\
+Mixed precision         & bfloat16 (A100) \\
+Seeds                   & $\{42, 123, 2024\}$ \\
+Augmentation factor $k$ & 1 (phishing rows only) \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Smart-attacker augmentation}
 \label{sec:augmentation}
@@ -255,7 +363,8 @@ not exhibit these cues). Table~\ref{tab:ops} summarizes the operations.
 \end{tabular}
 \end{table}
 
-We use the augmentation pipeline in two distinct ways:
+We use the augmentation pipeline in two distinct ways, summarized in
+Algorithms~\ref{alg:smart} and~\ref{alg:augtrain}:
 
 \paragraph{Smart-attacker test split} For each phishing email in the
 held-out test set we apply the entire pipeline once. Benign emails are left
@@ -264,10 +373,51 @@ test set; the only thing that changes is that phishing emails no longer
 exhibit obvious surface cues. A robust detector should perform comparably on
 both splits.
 
+\begin{algorithm}[t]
+\caption{Smart-attacker test split construction}
+\label{alg:smart}
+\begin{algorithmic}[1]
+\Require Test set $D_{\text{test}}$, edit list $\mathcal{O}$
+\Ensure  Smart-attacker test set $D_{\text{smart}}$
+\State $D_{\text{smart}} \gets \emptyset$
+\ForAll{$(x, y) \in D_{\text{test}}$}
+  \If{$y = 1$}
+    \Comment{phishing email — apply attacker pipeline}
+    \State $x' \gets x$
+    \ForAll{op $\in \mathcal{O}$}
+      \State $x' \gets \textsc{op}(x')$
+    \EndFor
+    \State $D_{\text{smart}} \gets D_{\text{smart}} \cup \{(x', 1)\}$
+  \Else
+    \Comment{benign email — leave unchanged}
+    \State $D_{\text{smart}} \gets D_{\text{smart}} \cup \{(x, 0)\}$
+  \EndIf
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
 \paragraph{Train-time augmentation} For each phishing email in the training
 set we generate $k\!=\!1$ additional augmented copy by passing it through the
 pipeline. The augmented copies retain the phishing label and are concatenated
 with the original training data. We then retrain the classifier from scratch.
+
+\begin{algorithm}[t]
+\caption{Train-time smart-attacker augmentation ($k\!=\!1$)}
+\label{alg:augtrain}
+\begin{algorithmic}[1]
+\Require Training set $D_{\text{train}}$, edit list $\mathcal{O}$
+\Ensure  Augmented training set $D_{\text{train}}^{\,+}$
+\State $D_{\text{train}}^{\,+} \gets D_{\text{train}}$
+\ForAll{$(x, y) \in D_{\text{train}}$ \textbf{with} $y = 1$}
+  \State $x' \gets x$
+  \ForAll{op $\in \mathcal{O}$}
+    \State $x' \gets \textsc{op}(x')$ \Comment{stochastic op}
+  \EndFor
+  \State $D_{\text{train}}^{\,+} \gets D_{\text{train}}^{\,+} \cup \{(x', 1)\}$
+\EndFor
+\State \textbf{shuffle}~$D_{\text{train}}^{\,+}$
+\end{algorithmic}
+\end{algorithm}
 
 \subsection{Evaluation protocol}
 We compare three model stages: (S1)~baseline trained on the original data
@@ -337,16 +487,17 @@ within seed noise). Augmentation produces a clean $+0.0020$ F1 gain on the
 smart-attacker test at zero cost on the standard test.}
 \label{tab:headline}
 \centering
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{lccc}
 \toprule
 \textbf{Model} & \textbf{Standard F1} & \textbf{Smart F1} & $\Delta$ \\
 \midrule
-S1: BERT baseline                & 0.9958\,$\pm$\,0.0002 & 0.9957\,$\pm$\,0.0001 & $-0.0001$ \\
-S2: BERT~+~augmented training    & 0.9958\,$\pm$\,0.0003 & 0.9977\,$\pm$\,0.0001 & $+0.0019$ \\
+S1: BERT baseline             & 0.9958\,$\pm$\,0.0002 & 0.9957\,$\pm$\,0.0001 & $-0.0001$ \\
+S2: BERT + aug.\ training      & 0.9958\,$\pm$\,0.0003 & 0.9977\,$\pm$\,0.0001 & $+0.0019$ \\
 \midrule
-$\Delta$ (S2$-$S1)               & $+0.0000$              & $+0.0020$              & --- \\
+$\Delta$ (S2$-$S1)            & $+0.0000$              & $+0.0020$              & --- \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
 \end{table}
 
 \begin{table}[t]
@@ -389,6 +540,74 @@ because the subject-prefix regex rarely fires on this corpus.}
 \bottomrule
 \end{tabular}
 \end{table}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  ybar, ymin=0.992, ymax=0.999,
+  width=0.95\columnwidth, height=4.6cm,
+  bar width=12pt,
+  enlarge x limits=0.35,
+  ylabel={F1 (phishing)},
+  symbolic x coords={Standard, Smart-attacker},
+  xtick=data,
+  legend style={at={(0.5,-0.22)}, anchor=north, legend columns=2,
+                font=\footnotesize, /tikz/every even column/.append style={column sep=10pt}},
+  ymajorgrids, grid style={dashed,gray!30},
+  every node near coord/.append style={font=\tiny, /pgf/number format/.cd, fixed, precision=4},
+  error bars/y dir=both, error bars/y explicit,
+]
+\addplot+[fill=blue!25] coordinates {
+  (Standard, 0.9958) +- (0, 0.0002)
+  (Smart-attacker, 0.9957) +- (0, 0.0001)
+};
+\addplot+[fill=orange!40] coordinates {
+  (Standard, 0.9958) +- (0, 0.0003)
+  (Smart-attacker, 0.9977) +- (0, 0.0001)
+};
+\legend{Baseline, Augmented}
+\end{axis}
+\end{tikzpicture}
+\caption{Phishing-class F1 by model and test split, mean $\pm$ std across
+three seeds. The baseline is essentially flat across splits; augmentation
+lifts the smart-attacker bar without moving the standard bar.}
+\label{fig:headline}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  ybar, ymin=0.993, ymax=0.999,
+  width=0.95\columnwidth, height=4.8cm,
+  bar width=12pt,
+  enlarge x limits=0.10,
+  ylabel={F1 (phishing)},
+  symbolic x coords={none, mask, urgency, subject, synonym, char, all},
+  xtick=data,
+  xticklabel style={font=\scriptsize, rotate=20, anchor=east},
+  ymajorgrids, grid style={dashed,gray!30},
+  error bars/y dir=both, error bars/y explicit,
+]
+\addplot+[fill=teal!35] coordinates {
+  (none, 0.9958) +- (0, 0.0003)
+  (mask, 0.9963) +- (0, 0.0001)
+  (urgency, 0.9958) +- (0, 0.0004)
+  (subject, 0.9958) +- (0, 0.0003)
+  (synonym, 0.9964) +- (0, 0.0002)
+  (char, 0.9975) +- (0, 0.0001)
+  (all, 0.9977) +- (0, 0.0001)
+};
+\draw[dashed, gray] (axis cs:none, 0.9958) -- (axis cs:all, 0.9958);
+\end{axis}
+\end{tikzpicture}
+\caption{Per-edit ablation on the augmented model (mean $\pm$ std, 3 seeds).
+\texttt{char} = \texttt{char\_perturb} dominates; \texttt{urgency} =
+\texttt{remove\_urgency} and \texttt{subject} = \texttt{rewrite\_subject}
+are no-ops within noise (dashed line = standard-test F1).}
+\label{fig:ablation}
+\end{figure}
 
 \paragraph{Headline finding.} Table~\ref{tab:headline} shows that, averaged
 over three seeds, the vanilla BERT baseline (S1) is essentially insensitive
@@ -434,6 +653,112 @@ model. Three observations:
         surface dependency that the augmented model is independently
         robust to.
 \end{itemize}
+
+% =============================================================================
+\section{Qualitative Analysis}
+\label{sec:qualitative}
+
+To make the results in \S\ref{sec:results} concrete, we walk through three
+representative phishing emails from the test set, comparing the original
+text to the smart-attacker variant produced by the full pipeline.\footnote{
+Emails are lightly redacted/shortened for space. Full unredacted versions
+are reproduced verbatim by \texttt{notebooks/phishing\_pipeline.ipynb}.}
+
+\subsection{Example 1: account-verification phish}
+
+\noindent\textbf{Original (label = phishing).}
+\begin{lstlisting}
+Subject: URGENT: Verification required
+Your Amazon account is subject to deletion
+unless you verify immediately at
+https://amaz0n-verify.example.com/login.
+Act now!
+\end{lstlisting}
+\noindent\textbf{Smart-attacker variant.}
+\begin{lstlisting}
+Subject: Verification required
+Your Amazon report is open to deletion
+unless you verify soon at [LINK].
+please respond
+\end{lstlisting}
+
+\noindent The smart-attacker version retains the recognizable
+\textit{phishing topic} (account verification, threatened deletion,
+external link) but loses every surface marker the proposal predicted
+would matter: the \texttt{URGENT:} subject prefix is gone, the URL is
+masked, ``immediately'' has become ``soon,'' and ``Act now!'' has become
+``please respond.'' Both the baseline and augmented models classify both
+versions as phishing in our experiments, consistent with the headline
+result.
+
+\subsection{Example 2: bulk pharmacy spam}
+
+This is a representative member of the dominant class in the corpus
+(legacy bulk spam from CEAS-08 and Enron). The message is on-topic for
+phishing in this dataset's labeling convention but does not look anything
+like a modern targeted phishing attempt.
+
+\noindent\textbf{Original (label = phishing).}
+\begin{lstlisting}
+Subject: Psychologist endorsed products for men
+Smell better with the girls with a stronger
+pheromone product. http://shop-rx.example/login
+-- Use Opera's revolutionary e-mail client.
+\end{lstlisting}
+\noindent\textbf{Smart-attacker variant.}
+\begin{lstlisting}
+Subject: Psychologist endorsed products for men
+Smell better with the girls with a stronger
+pheromone product. [LINK]
+-- Utilization Opera's revolutionary e-mail client.
+\end{lstlisting}
+
+\noindent The smart-attacker variant differs only in the masked URL and a
+synonym swap (\textit{Use}~$\rightarrow$~\textit{Utilization}). Notice
+that the surrounding text remains overwhelmingly indicative of the
+phishing label even after edits --- it is precisely this corpus property
+that explains the null baseline-drop result of \S\ref{sec:results}. A
+classifier with any reasonable representation of bulk-spam topics would
+classify this message identically before and after augmentation.
+
+\subsection{Example 3: news-headline lure}
+
+\noindent\textbf{Original (label = phishing).}
+\begin{lstlisting}
+Subject: CNN.com Daily Top 10
+TOP 10 VIDEOS
+1. PARIS HILTON TAKES ON MCCAIN
+   http://cnn.example/p1.html
+2. BIKINI BARISTA STAND CLOSED
+3. MAGGOTS: THE NEW ANTIBIOTIC?
+   http://cnn.example/p3.html
+...
+\end{lstlisting}
+\noindent\textbf{Smart-attacker variant.}
+\begin{lstlisting}
+Subject: [Colligate] Casual Top 10
+TOP 10 VIDEOS
+1. PARIS HILTON TAKES ON MCCAIN [LINK]
+2. BIKINI BARISTA STAND CLOSED
+3. MAGGOTS: THE NEW ANTIBIOTIC? [LINK]
+...
+\end{lstlisting}
+
+\noindent Here the synonym-swap operator produces a notably non-fluent
+title (\textit{CNN.com Daily}~$\rightarrow$~\textit{[Colligate] Casual}).
+This is one of the failure modes of WordNet-based synonym swap on
+named-entity tokens. Despite the disfluency, the rest of the message
+remains classifiable; we have not observed cases where synonym swap alone
+flips the model's prediction.
+
+\subsection{Take-away}
+
+The qualitative pattern matches the quantitative results: removing
+surface cues from this corpus's phishing emails leaves enough signal in
+the surrounding content for both the baseline and augmented model to
+classify correctly. We expect this margin to shrink on a corpus where the
+original phishing emails read more like ordinary business correspondence
+(e.g.\ modern LLM-generated phishing).
 
 % =============================================================================
 \section{Discussion}
@@ -527,6 +852,48 @@ signal is already easy.
         \emph{model} variance but not \emph{data} variance; a fuller study
         would use multiple resampled splits as well.
 \end{itemize}
+
+% =============================================================================
+\section{Future Work}
+\label{sec:future}
+
+We see four concrete directions in which the present study should be
+extended.
+
+\paragraph{1. Modern LLM-generated phishing.} The most important
+follow-up is to re-run the same pipeline on a corpus of \emph{modern},
+LLM-generated phishing such as those described by Kim~et~al.\ and the
+Phish-Master framework~\cite{kim2025llms,phishmaster2025}. We expect that
+the redundancy property which makes our baseline robust on Champa~et~al.\
+will not hold on LLM-rewritten phishing, in which case the baseline drop
+should grow substantially and augmentation's role would shift from
+``free regularizer'' to ``necessary defense.'' The codebase already
+exposes this as a single configuration change; the bottleneck is data
+availability.
+
+\paragraph{2. Stronger adversarial attacks.} Replacing our rule-based
+edit pipeline with a gradient-based or search-based attack
+(BAE~\cite{textattack2020}, PGD-BERT-Attack~\cite{pgdbertattack2024})
+would let the attacker discover model-specific failure modes that our
+fixed lexicon cannot. We anticipate larger baseline drops here even on
+Champa~et~al., because the attack would be optimized against the
+classifier rather than against a generic surface-feature heuristic.
+
+\paragraph{3. Adaptive defenses.} Our augmentation is non-adaptive: the
+defender samples once from a fixed edit distribution. An adaptive
+counterpart would alternate attack and defense rounds, in the spirit of
+classical adversarial training~\cite{explainabletransformer2025}, and we
+expect this to widen the augmented model's lead on under-attack F1
+without reopening clean-data degradation.
+
+\paragraph{4. Cross-source generalization.} The Champa~et~al.\ release
+combines multiple public corpora; our experiments collapse them. A
+\emph{leave-one-corpus-out} evaluation, where the model is trained on
+four corpora and tested on the held-out fifth, would reveal whether
+the apparent robustness here is a property of BERT or simply of in-source
+generalization. Our data loader already tags each row with its source
+corpus, so this is a reformulation of \texttt{src/data\_loader.py} rather
+than new code.
 
 % =============================================================================
 \section{Conclusion}
