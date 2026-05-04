@@ -120,7 +120,7 @@ disguise a malicious link as an innocent-looking domain.
 
 Mainstream phishing classifiers are typically Transformer-based: BERT and
 RoBERTa fine-tunes routinely report 98--99\% accuracy on standard benchmarks
-\cite{atawneh2023phishing,phishingbertroberta2025,indepthphishingdl2025}.
+\cite{atawneh2023phishing,phishingbertroberta2026,indepthphishingdl2025}.
 However, this performance is measured on data with strong, often artifactual,
 phishing cues. When those cues are removed, classifier accuracy drops
 substantially~\cite{adversarialphishing2023,explainabletransformer2025,robustllmphish2025}.
@@ -252,7 +252,7 @@ BERT for email phishing classification, reporting up to 99.6\% accuracy with
 BERT. More recent surveys and replications confirm that
 BERT/RoBERTa/DistilBERT are competitive on multiple corpora, with DistilBERT
 trading marginal accuracy for considerable inference-cost
-savings~\cite{phishingbertroberta2025,indepthphishingdl2025,nadeepphishing2025}.
+savings~\cite{phishingbertroberta2026,indepthphishingdl2025,nadeepphishing2025}.
 Alhogail and Alsabih~\cite{alhogail2021applying} additionally show that strong
 detection is possible from email body text alone (without URLs or
 attachments), motivating evaluation under URL removal --- but they do not
@@ -385,7 +385,7 @@ both splits.
     \Comment{phishing email — apply attacker pipeline}
     \State $x' \gets x$
     \ForAll{op $\in \mathcal{O}$}
-      \State $x' \gets \textsc{op}(x')$
+      \State $x' \gets \textsc{op}(x')$ \Comment{stochastic op}
     \EndFor
     \State $D_{\text{smart}} \gets D_{\text{smart}} \cup \{(x', 1)\}$
   \Else
